@@ -13,10 +13,11 @@ from pathlib import Path
 import librosa
 import torch
 from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler
-from transformers import ClapModel, ClapProcessor
+from transformers import ClapModel, ClapProcessor, CLIPTextModel, CLIPTokenizer
 from peft import PeftModel
 
 from model import AudioProjector
+from artist_context import PROFILE_MODES, load_profiles, profile_text
 
 SD_ID = "runwayml/stable-diffusion-v1-5"
 CLAP_ID = "laion/clap-htsat-unfused"
@@ -30,9 +31,12 @@ def audio_to_cond(mp3_path, clap, processor, projector, device, dtype):
     if len(audio) > CLIP_SECONDS * TARGET_SR:
         s = (len(audio) - CLIP_SECONDS * TARGET_SR) // 2
         audio = audio[s : s + CLIP_SECONDS * TARGET_SR]
-    inputs = processor(audios=audio, sampling_rate=TARGET_SR, return_tensors="pt")
+    inputs = processor(audio=audio, sampling_rate=TARGET_SR, return_tensors="pt")
     inputs = {k: v.to(device) for k, v in inputs.items()}
-    emb = clap.get_audio_features(**inputs).to(torch.float32)
+    emb = clap.get_audio_features(**inputs)
+    if hasattr(emb, "pooler_output"):
+        emb = emb.pooler_output
+    emb = emb.to(torch.float32)
     cond = projector(emb).to(dtype)
     null = projector.null(emb.shape[0], device=device, dtype=dtype)
     return cond, null
@@ -48,7 +52,19 @@ def main():
     ap.add_argument("--num-tokens", type=int, default=8)
     ap.add_argument("--size", type=int, default=256)
     ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument("--artist", required=True, choices=("ariana", "drake", "lesserafim"))
+    ap.add_argument("--profile-mode", required=True, choices=PROFILE_MODES)
+    ap.add_argument("--profile-file", default="artist_profiles.json")
     args = ap.parse_args()
+
+    saved_args_path = Path(args.ckpt) / "train_args.pt"
+    if saved_args_path.exists():
+        saved_args = torch.load(saved_args_path, map_location="cpu", weights_only=False)
+        saved_mode = saved_args.get("profile_mode")
+        if saved_mode and saved_mode != args.profile_mode:
+            raise SystemExit(
+                f"Checkpoint uses profile mode {saved_mode!r}, not {args.profile_mode!r}"
+            )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.float16 if device == "cuda" else torch.float32
@@ -75,7 +91,22 @@ def main():
     processor = ClapProcessor.from_pretrained(CLAP_ID)
     clap = ClapModel.from_pretrained(CLAP_ID).to(device).eval()
 
-    cond, null = audio_to_cond(args.audio, clap, processor, projector, device, dtype)
+    audio_cond, audio_null = audio_to_cond(args.audio, clap, processor, projector, device, dtype)
+    profiles = load_profiles(args.profile_file)
+    tokenizer = CLIPTokenizer.from_pretrained(SD_ID, subfolder="tokenizer")
+    text_encoder = CLIPTextModel.from_pretrained(
+        SD_ID, subfolder="text_encoder", torch_dtype=dtype
+    ).to(device).eval()
+    prompt = profile_text(profiles, args.artist, args.profile_mode)
+    tokens = tokenizer([prompt], padding="max_length", truncation=True,
+                       max_length=tokenizer.model_max_length, return_tensors="pt")
+    empty = tokenizer([""], padding="max_length", max_length=tokenizer.model_max_length,
+                      return_tensors="pt")
+    with torch.no_grad():
+        text_cond = text_encoder(tokens.input_ids.to(device))[0]
+        text_null = text_encoder(empty.input_ids.to(device))[0]
+    cond = torch.cat([audio_cond, text_cond], dim=1)
+    null = torch.cat([audio_null, text_null], dim=1)
 
     generator = torch.Generator(device=device).manual_seed(args.seed) if args.seed is not None else None
     out = pipe(
