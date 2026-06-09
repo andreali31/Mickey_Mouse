@@ -11,3 +11,4 @@ soundfile>=0.12.1
 Pillow>=10.0.0
 numpy>=1.24
 tqdm
+reportlab>=4.0.0

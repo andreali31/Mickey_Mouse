@@ -1,5 +1,5 @@
 """
-Walk data/{artist}/{audio,covers}, pair each mp3 with its same-stem jpg cover,
+Find each artist's audio and cover folders, pair files by stem,
 extract a CLAP audio embedding and the SD VAE latent for the cover, and cache
 both as a single .pt per pair under cache/.
 
@@ -26,19 +26,44 @@ CLIP_SECONDS = 10
 IMG_SIZE = 256
 
 
+TOP_LEVEL_LAYOUT = {
+    "ariana": ("arianasongs", "arianacovers"),
+    "drake": ("drakesongs", "drakecovers"),
+    "lesserafim": ("lesserafimsongs", "lesserafimcovers"),
+}
+
+
+def _cover_for_stem(cover_dir, stem):
+    for suffix in (".jpg", ".jpeg", ".png"):
+        candidate = cover_dir / f"{stem}{suffix}"
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def find_pairs(data_root: Path):
     pairs = []
-    for artist_dir in sorted(p for p in data_root.iterdir() if p.is_dir()):
-        audio_dir = artist_dir / "audio"
-        cover_dir = artist_dir / "covers"
+    roots = []
+    if data_root.exists():
+        for artist_dir in sorted(p for p in data_root.iterdir() if p.is_dir()):
+            roots.append((artist_dir.name, artist_dir / "audio", artist_dir / "covers"))
+    repo_root = Path(__file__).resolve().parent
+    for artist, (audio_name, cover_name) in TOP_LEVEL_LAYOUT.items():
+        roots.append((artist, repo_root / audio_name, repo_root / cover_name))
+
+    seen = set()
+    for artist, audio_dir, cover_dir in roots:
         if not (audio_dir.exists() and cover_dir.exists()):
             continue
         for mp3 in sorted(audio_dir.glob("*.mp3")):
-            jpg = cover_dir / f"{mp3.stem}.jpg"
-            if not jpg.exists():
-                jpg = cover_dir / f"{mp3.stem}.jpeg"
-            if jpg.exists():
-                pairs.append((artist_dir.name, mp3, jpg))
+            if mp3.stat().st_size < 1024:
+                print(f"[warn] skipping invalid or empty audio file {mp3}")
+                continue
+            cover = _cover_for_stem(cover_dir, mp3.stem)
+            key = (artist, mp3.stem)
+            if cover and key not in seen:
+                pairs.append((artist, mp3, cover))
+                seen.add(key)
             else:
                 print(f"[warn] no cover for {mp3}")
     return pairs
@@ -50,9 +75,11 @@ def encode_audio(mp3_path: Path, clap, processor, device):
     if len(audio) > CLIP_SECONDS * TARGET_SR:
         start = (len(audio) - CLIP_SECONDS * TARGET_SR) // 2
         audio = audio[start : start + CLIP_SECONDS * TARGET_SR]
-    inputs = processor(audios=audio, sampling_rate=TARGET_SR, return_tensors="pt")
+    inputs = processor(audio=audio, sampling_rate=TARGET_SR, return_tensors="pt")
     inputs = {k: v.to(device) for k, v in inputs.items()}
-    emb = clap.get_audio_features(**inputs)  # (1, 512)
+    emb = clap.get_audio_features(**inputs)
+    if hasattr(emb, "pooler_output"):
+        emb = emb.pooler_output
     return emb.squeeze(0).cpu()
 
 

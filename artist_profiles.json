@@ -1,0 +1,27 @@
+{
+  "ariana": {
+    "display_name": "Ariana Grande",
+    "style": "polished contemporary pop and R&B, expressive high-register vocals, romantic and introspective themes, glamorous editorial portraiture, soft luminous lighting, pastel pink, silver and monochrome palettes, elegant minimal album-cover composition",
+    "biography": "American singer and actress from Boca Raton, Florida; began on Broadway and Nickelodeon before releasing her 2013 debut album Yours Truly through Republic Records; known for a four-octave vocal range and a career spanning pop, R&B and electronic influences",
+    "sources": [
+      "https://www.britannica.com/biography/Ariana-Grande",
+      "https://www.republicrecords.com/pages/about"
+    ]
+  },
+  "drake": {
+    "display_name": "Drake",
+    "style": "Toronto-rooted hip-hop and contemporary R&B, melodic rap and singing, confident and vulnerable moods, nocturnal city atmosphere, cinematic minimalism, dark blue, black and gold palettes, stark symbolic album-cover composition",
+    "biography": "Canadian rapper, singer and former actor from Toronto; first became known through Degrassi before independently releasing mixtapes and building an influential music career; co-founded the Toronto collective and record label OVO Sound",
+    "sources": [
+      "https://www.britannica.com/biography/Drake"
+    ]
+  },
+  "lesserafim": {
+    "display_name": "LE SSERAFIM",
+    "style": "high-energy K-pop, dance-pop and R&B influences, fearless self-confidence and resilience themes, fashion-forward group imagery, bold choreography, sleek editorial photography, high-contrast black, white and vivid accent colors, dynamic graphic album-cover composition",
+    "biography": "five-member multinational girl group formed by Source Music under HYBE, consisting of Sakura, Kim Chaewon, Huh Yunjin, Kazuha and Hong Eunchae; debuted in 2022; the name LE SSERAFIM is an anagram of IM FEARLESS and expresses determination to move forward without being shaken by public judgment",
+    "sources": [
+      "https://www.le-sserafim.jp/profile"
+    ]
+  }
+}

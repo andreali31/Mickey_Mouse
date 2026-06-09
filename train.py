@@ -20,9 +20,11 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
 from diffusers import UNet2DConditionModel, DDPMScheduler
+from transformers import CLIPTextModel, CLIPTokenizer
 from peft import LoraConfig, get_peft_model
 
 from model import AudioProjector
+from artist_context import PROFILE_MODES, load_profiles, profile_text
 
 SD_ID = "runwayml/stable-diffusion-v1-5"
 
@@ -39,7 +41,7 @@ class CachedPairs(Dataset):
 
     def __getitem__(self, i):
         d = torch.load(self.files[i], map_location="cpu")
-        return d["latent"].float(), d["audio_emb"].float()
+        return d["latent"].float(), d["audio_emb"].float(), d["artist"]
 
 
 def main():
@@ -56,16 +58,23 @@ def main():
     ap.add_argument("--save-every", type=int, default=50)
     ap.add_argument("--mixed-precision", default="fp16", choices=["no", "fp16", "bf16"])
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--profile-mode", required=True, choices=PROFILE_MODES)
+    ap.add_argument("--profile-file", default="artist_profiles.json")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = {"no": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}[args.mixed_precision]
+    if device != "cuda":
+        dtype = torch.float32
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
 
     print("Loading UNet + scheduler...")
     unet = UNet2DConditionModel.from_pretrained(SD_ID, subfolder="unet")
     noise_sched = DDPMScheduler.from_pretrained(SD_ID, subfolder="scheduler")
+    tokenizer = CLIPTokenizer.from_pretrained(SD_ID, subfolder="tokenizer")
+    text_encoder = CLIPTextModel.from_pretrained(SD_ID, subfolder="text_encoder").to(device).eval()
+    text_encoder.requires_grad_(False)
     unet.requires_grad_(False)
 
     lora_cfg = LoraConfig(
@@ -79,19 +88,44 @@ def main():
     unet.print_trainable_parameters()
 
     projector = AudioProjector(audio_dim=512, num_tokens=args.num_tokens, hidden_dim=768).to(device)
+    profiles = load_profiles(args.profile_file)
+
+    @torch.no_grad()
+    def encode_prompts(prompts):
+        tokens = tokenizer(prompts, padding="max_length", truncation=True,
+                           max_length=tokenizer.model_max_length, return_tensors="pt")
+        text_cond = text_encoder(tokens.input_ids.to(device))[0]
+        empty = tokenizer([""] * len(prompts), padding="max_length",
+                          max_length=tokenizer.model_max_length, return_tensors="pt")
+        text_null = text_encoder(empty.input_ids.to(device))[0]
+        return text_cond, text_null
+
+    context_cache = {}
+    for artist in profiles:
+        prompt = profile_text(profiles, artist, args.profile_mode)
+        cond, null = encode_prompts([prompt])
+        context_cache[artist] = cond.squeeze(0).cpu()
+    _, base_text_null = encode_prompts([""])
+    base_text_null = base_text_null.squeeze(0).cpu()
+    del text_encoder, tokenizer
+
+    def context_for(artists):
+        cond = torch.stack([context_cache[artist] for artist in artists]).to(device)
+        null = base_text_null.unsqueeze(0).expand(len(artists), -1, -1).to(device)
+        return cond, null
 
     trainable = [p for p in unet.parameters() if p.requires_grad] + list(projector.parameters())
     opt = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=1e-4)
 
     ds = CachedPairs(args.cache_dir)
     print(f"Dataset: {len(ds)} pairs")
-    loader = DataLoader(ds, batch_size=args.batch_size, shuffle=True, num_workers=0, drop_last=True)
+    loader = DataLoader(ds, batch_size=args.batch_size, shuffle=True, num_workers=0, drop_last=False)
 
-    scaler = torch.cuda.amp.GradScaler(enabled=(dtype == torch.float16))
+    scaler = torch.amp.GradScaler("cuda", enabled=(dtype == torch.float16))
     global_step = 0
     pbar = tqdm(range(args.epochs))
     for epoch in pbar:
-        for latents, audio_emb in loader:
+        for latents, audio_emb, artists in loader:
             latents = latents.to(device, dtype=torch.float32)
             audio_emb = audio_emb.to(device, dtype=torch.float32)
             bsz = latents.shape[0]
@@ -100,11 +134,14 @@ def main():
             t = torch.randint(0, noise_sched.config.num_train_timesteps, (bsz,), device=device).long()
             noisy = noise_sched.add_noise(latents, noise, t)
 
-            cond = projector(audio_emb)
+            audio_cond = projector(audio_emb)
+            text_cond, batch_text_null = context_for(artists)
+            cond = torch.cat([audio_cond, text_cond], dim=1)
             if args.cfg_drop > 0:
                 drop = (torch.rand(bsz, device=device) < args.cfg_drop)
                 if drop.any():
-                    null = projector.null(bsz, device=device, dtype=cond.dtype)
+                    audio_null = projector.null(bsz, device=device, dtype=cond.dtype)
+                    null = torch.cat([audio_null, batch_text_null.to(cond.dtype)], dim=1)
                     cond = torch.where(drop.view(-1, 1, 1), null, cond)
 
             with torch.autocast(device_type="cuda", dtype=dtype, enabled=(device == "cuda" and dtype != torch.float32)):

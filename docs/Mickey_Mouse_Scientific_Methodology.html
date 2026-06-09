@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Context-Conditioned Audio-to-Album-Cover Generation</title>
+<style>
+@page { margin: 0.65in; }
+body { font-family: Helvetica, Arial, sans-serif; color: #171717; line-height: 1.42; font-size: 10.5pt; }
+h1 { font-size: 23pt; margin: 0 0 5pt; }
+h2 { font-size: 15pt; margin: 19pt 0 7pt; border-bottom: 1px solid #bbb; padding-bottom: 3pt; }
+h3 { font-size: 11.5pt; margin: 12pt 0 4pt; }
+p { margin: 5pt 0; }
+ul, ol { margin: 5pt 0 8pt 19pt; padding: 0; }
+li { margin: 2pt 0; }
+table { border-collapse: collapse; margin: 7pt 0 11pt; width: 100%; }
+th, td { border: 1px solid #aaa; padding: 5pt 7pt; text-align: left; }
+th { background: #ededed; }
+code { font-family: Menlo, monospace; font-size: 9pt; background: #f1f1f1; padding: 1pt 3pt; }
+.subtitle { color: #555; font-size: 12pt; margin-bottom: 18pt; }
+.note { background: #f3f5f8; border-left: 3px solid #546579; padding: 7pt 10pt; margin: 9pt 0; }
+.page-break { break-before: page; }
+.figure { margin: 12pt 0; text-align: center; }
+.figure img { width: 100%; height: auto; }
+.caption { font-size: 9pt; color: #555; margin-top: 4pt; text-align: left; }
+.sources a { color: #184f8c; text-decoration: none; }
+</style>
+</head>
+<body>
+<h1>Context-Conditioned Audio-to-Album-Cover Generation</h1>
+<div class="subtitle">Scientific methodology and experimental summary</div>
+
+<h2>Abstract</h2>
+<p>This report documents the adaptation and evaluation of an audio-conditioned album-cover generation system. The system combines CLAP audio embeddings, Stable Diffusion 1.5, LoRA fine-tuning, and curated artist context for Ariana Grande, Drake, and LE SSERAFIM. Three shared models were trained for one epoch using style-only, biography-only, and combined artist context. Fifty-one valid song-cover pairs were used for training. Nine initially unusable examples were later repaired and retained as a held-out test set. The evaluation produced 27 images per run, with controlled comparisons across context modes. Results indicate strong artist-level visual conditioning but limited evidence of song-specific differentiation.</p>
+
+<h2>1. Repository Setup</h2>
+<p>The GitHub repository <code>andreali31/Mickey_Mouse</code> was cloned locally. Its original implementation used Stable Diffusion 1.5, CLAP audio embeddings, a learned audio projector, and LoRA adaptation of the Stable Diffusion UNet.</p>
+<p>The original preprocessing script expected <code>data/&lt;artist&gt;/audio</code> and <code>data/&lt;artist&gt;/covers</code>. The checked-in dataset instead used top-level folders such as <code>arianasongs</code>, <code>arianacovers</code>, <code>drakesongs</code>, and <code>lesserafimcovers</code>. The preprocessing code was modified to support this layout and accept JPG, JPEG, and PNG cover images.</p>
+
+<h2>2. Dataset Validation and Split</h2>
+<p>The repository contained 60 nominal audio examples: 20 songs for each of the three artists. At the time the training cache was created, seven MP3 files were empty or corrupt and two songs lacked same-stem cover files. These nine examples were excluded automatically.</p>
+<table><tr><th>Artist</th><th>Valid training pairs</th></tr><tr><td>Ariana Grande</td><td>16</td></tr><tr><td>Drake</td><td>15</td></tr><tr><td>LE SSERAFIM</td><td>20</td></tr><tr><th>Total</th><th>51</th></tr></table>
+<p>The nine excluded files were subsequently repaired in the remote repository. Because they were absent from the existing training cache and checkpoints, they were used as a held-out test set:</p>
+<ul><li>Ariana Grande: <code>stuckwithu</code>, <code>wecantbefriends</code>, <code>yesand</code>, and <code>problem</code>.</li><li>Drake: <code>inmyfeelings</code>, <code>laughnowcrylater</code>, <code>niceforwhat</code>, <code>passionfruit</code>, and <code>themotto</code>.</li></ul>
+
+<h2>3. Artist Context Construction</h2>
+<p>A structured JSON profile was created for each artist. Every profile contained a display name, musical and visual style, biographical background, and source URLs. Three experimental context modes were defined:</p>
+<ol><li><strong>Style:</strong> genres, moods, themes, colors, photography, and album-cover aesthetics.</li><li><strong>Biography:</strong> origin, career history, formation, and artistic identity.</li><li><strong>Combined:</strong> biographical information followed by musical and visual direction.</li></ol>
+
+<h2>4. Data Preprocessing</h2>
+<h3>4.1 Audio</h3>
+<ol><li>Decode each MP3 as mono audio.</li><li>Resample to 48 kHz.</li><li>Select the centered ten-second segment when the track exceeds ten seconds.</li><li>Encode the segment using <code>laion/clap-htsat-unfused</code>.</li></ol>
+<p>The result was one 512-dimensional CLAP embedding for each song.</p>
+<h3>4.2 Images</h3>
+<ol><li>Convert the cover to RGB.</li><li>Resize using bicubic interpolation.</li><li>Center-crop to 256 by 256 pixels.</li><li>Normalize pixel values to the range [-1, 1].</li><li>Encode the image using the Stable Diffusion 1.5 VAE.</li></ol>
+<p>Each cached PyTorch record stored the audio embedding, image latent, artist identifier, and song identifier.</p>
+
+<h2>5. Conditioning Architecture</h2>
+<p>The original system stored artist names but did not condition the model on them. The revised system uses both audio and artist context.</p>
+<h3>5.1 Audio condition</h3>
+<p>A trainable multilayer perceptron projects the 512-dimensional CLAP embedding into eight 768-dimensional audio tokens.</p>
+<h3>5.2 Text condition</h3>
+<p>The selected artist profile is tokenized and encoded by Stable Diffusion 1.5's frozen CLIP text encoder, producing 77 tokens of dimension 768.</p>
+<h3>5.3 Cross-attention condition</h3>
+<p>The eight audio tokens and 77 text tokens are concatenated into 85 cross-attention tokens and supplied to the UNet through <code>encoder_hidden_states</code>. The CLIP text encoder remains frozen. Only the audio projector and LoRA parameters are optimized.</p>
+
+<h2>6. Classifier-Free Guidance</h2>
+<p>Classifier-free guidance dropout was set to 0.1. For approximately 10% of training samples, audio tokens were replaced with a learned null token and text tokens were replaced with the frozen CLIP embedding of an empty prompt. This enables conditional and unconditional predictions during inference.</p>
+
+<h2>7. LoRA and Training Configuration</h2>
+<p>The base model was <code>runwayml/stable-diffusion-v1-5</code>. Base UNet weights were frozen. LoRA adapters were applied to <code>to_q</code>, <code>to_k</code>, <code>to_v</code>, and <code>to_out.0</code>.</p>
+<table><tr><th>Parameter</th><th>Value</th></tr><tr><td>LoRA rank</td><td>8</td></tr><tr><td>LoRA alpha</td><td>16</td></tr><tr><td>Learning rate</td><td>1 x 10^-4</td></tr><tr><td>Weight decay</td><td>1 x 10^-4</td></tr><tr><td>Batch size</td><td>4</td></tr><tr><td>Gradient clipping</td><td>1.0</td></tr><tr><td>CFG dropout</td><td>0.1</td></tr><tr><td>Training seed</td><td>0</td></tr><tr><td>Epochs</td><td>1</td></tr><tr><td>Optimization steps</td><td>13 per model</td></tr></table>
+<p>Approximately 1.59 million UNet parameters were trainable through LoRA. The audio projector was also trained. <code>drop_last=False</code> ensured that all 51 examples participated.</p>
+
+<h2>8. Training Experiments</h2>
+<p>Three separate shared-model checkpoints were trained. All checkpoints used the same 51 examples, all three artists, identical initialization seed, and identical hyperparameters. The only experimental difference was the artist context text.</p>
+<table><tr><th>Checkpoint</th><th>Context</th><th>Final reported batch loss</th></tr><tr><td>Style</td><td>Musical and visual style</td><td>0.0393</td></tr><tr><td>Biography</td><td>Biographical background</td><td>0.0400</td></tr><tr><td>Combined</td><td>Style and biography</td><td>0.0399</td></tr></table>
+<div class="note">The reported values are final training-batch losses, not independent validation or test metrics.</div>
+
+<h2>9. Generation Procedure</h2>
+<table><tr><th>Parameter</th><th>Value</th></tr><tr><td>Scheduler</td><td>DPM-Solver Multistep</td></tr><tr><td>Resolution</td><td>256 x 256</td></tr><tr><td>Diffusion steps</td><td>30</td></tr><tr><td>Guidance scale</td><td>5.0</td></tr><tr><td>Audio input</td><td>Centered ten-second segment</td></tr><tr><td>Negative condition</td><td>Null audio plus empty text</td></tr></table>
+<p>For each generation, the test audio was encoded with CLAP, projected into audio tokens, concatenated with the selected artist profile embedding, and passed to Stable Diffusion with the corresponding LoRA checkpoint.</p>
+
+<h2>10. Held-Out Evaluation</h2>
+<p>Each of the nine repaired songs was generated once with every checkpoint, producing 27 images and nine three-column comparison sheets.</p>
+<h3>10.1 Initial seed-controlled run</h3>
+<p>The first evaluation used seed 0 for every song. This controlled all random initialization but caused visually repetitive compositions within each artist.</p>
+<h3>10.2 Different seed per song</h3>
+<p>The evaluation was repeated with a deterministic different seed for each song. Within a song, the same seed was retained across all three context modes so context remained the only experimental difference.</p>
+<table><tr><th>Song</th><th>Seed</th></tr><tr><td>stuckwithu</td><td>100</td></tr><tr><td>wecantbefriends</td><td>101</td></tr><tr><td>yesand</td><td>102</td></tr><tr><td>problem</td><td>103</td></tr><tr><td>inmyfeelings</td><td>104</td></tr><tr><td>laughnowcrylater</td><td>105</td></tr><tr><td>niceforwhat</td><td>106</td></tr><tr><td>passionfruit</td><td>107</td></tr><tr><td>themotto</td><td>108</td></tr></table>
+
+<div class="page-break"></div>
+<h2>11. Varied-Seed Results Overview</h2>
+<div class="figure"><img src="assets/heldout_varied_seeds_overview.png" alt="Varied-seed held-out evaluation"><div class="caption">Figure 1. Held-out songs generated with a distinct seed per song. Within each song, style, biography, and combined modes use the same seed.</div></div>
+
+<h2>12. Computing Environment</h2>
+<p>Training and inference were performed on an Apple Silicon macOS computer. PyTorch reported no CUDA or MPS device, so execution used the CPU. After model loading, one training epoch took approximately one minute. A 30-step image generally required approximately 40 to 55 seconds. Hugging Face model components were downloaded once and subsequently loaded from the local cache.</p>
+
+<h2>13. Interpretation and Limitations</h2>
+<p>The experiment demonstrates that artist context can strongly influence an audio-conditioned Stable Diffusion model after one epoch. However, it does not establish robust song-specific learning.</p>
+<ul><li>The training set contains only 51 examples.</li><li>Each checkpoint trained for only one epoch.</li><li>No validation-based checkpoint selection was performed.</li><li>Text conditioning appears stronger than audio conditioning.</li><li>Results show artist-level visual templates and repetition.</li><li>One sample per song, context, and seed is insufficient for robust statistical comparison.</li><li>No FID, CLIP similarity, diversity metric, audio-image correspondence metric, or formal human evaluation was performed.</li><li>Changing the seed increases compositional diversity but does not improve the learned audio representation.</li><li>Generated portraits should not be interpreted as faithful representations of real artists.</li></ul>
+<p>The most defensible conclusion is that the system learned broad artist-associated visual patterns, while evidence for song-level audio differentiation remains limited.</p>
+
+<h2>14. Source Material</h2>
+<div class="sources"><ul><li><a href="https://www.britannica.com/biography/Ariana-Grande">Encyclopaedia Britannica: Ariana Grande</a></li><li><a href="https://www.britannica.com/biography/Drake">Encyclopaedia Britannica: Drake</a></li><li><a href="https://www.le-sserafim.jp/profile">LE SSERAFIM official profile</a></li><li><a href="https://www.republicrecords.com/pages/about">Republic Records</a></li><li><a href="https://github.com/andreali31/Mickey_Mouse">Project repository</a></li></ul></div>
+</body>
+</html>
