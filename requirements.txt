@@ -12,3 +12,9 @@ Pillow>=10.0.0
 numpy>=1.24
 tqdm
 reportlab>=4.0.0
+
+# torchao isn't used by this project, but Colab ships an old version (0.10.0)
+# that peft's LoRA dispatcher rejects on import. We don't need torchao; if it's
+# present and too old it just breaks training. Easiest path on Colab:
+#   pip uninstall -y torchao
+# If you actually want it, pin >=0.16.0.

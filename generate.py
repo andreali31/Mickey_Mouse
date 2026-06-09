@@ -80,6 +80,9 @@ def main():
     print("Attaching LoRA adapter...")
     lora_dir = Path(args.ckpt) / "unet_lora"
     pipe.unet = PeftModel.from_pretrained(pipe.unet, str(lora_dir))
+    # Merge LoRA into base UNet to avoid PeftModel+fp16 dtype mismatches.
+    pipe.unet = pipe.unet.to(dtype)
+    pipe.unet = pipe.unet.merge_and_unload()
     pipe.unet.to(device, dtype=dtype)
 
     print("Loading projector...")
@@ -91,11 +94,16 @@ def main():
     processor = ClapProcessor.from_pretrained(CLAP_ID)
     clap = ClapModel.from_pretrained(CLAP_ID).to(device).eval()
 
-    audio_cond, audio_null = audio_to_cond(args.audio, clap, processor, projector, device, dtype)
+    # Build conditioning in fp32 throughout; cast to inference dtype only
+    # at the very end so projector outputs can't overflow fp16 and NaN
+    # the cross-attention.
+    audio_cond_f, audio_null_f = audio_to_cond(
+        args.audio, clap, processor, projector, device, torch.float32
+    )
     profiles = load_profiles(args.profile_file)
     tokenizer = CLIPTokenizer.from_pretrained(SD_ID, subfolder="tokenizer")
     text_encoder = CLIPTextModel.from_pretrained(
-        SD_ID, subfolder="text_encoder", torch_dtype=dtype
+        SD_ID, subfolder="text_encoder"
     ).to(device).eval()
     prompt = profile_text(profiles, args.artist, args.profile_mode)
     tokens = tokenizer([prompt], padding="max_length", truncation=True,
@@ -103,10 +111,12 @@ def main():
     empty = tokenizer([""], padding="max_length", max_length=tokenizer.model_max_length,
                       return_tensors="pt")
     with torch.no_grad():
-        text_cond = text_encoder(tokens.input_ids.to(device))[0]
-        text_null = text_encoder(empty.input_ids.to(device))[0]
-    cond = torch.cat([audio_cond, text_cond], dim=1)
-    null = torch.cat([audio_null, text_null], dim=1)
+        text_cond_f = text_encoder(tokens.input_ids.to(device))[0].float()
+        text_null_f = text_encoder(empty.input_ids.to(device))[0].float()
+    cond = torch.cat([audio_cond_f, text_cond_f], dim=1).to(dtype)
+    null = torch.cat([audio_null_f, text_null_f], dim=1).to(dtype)
+    if torch.isnan(cond).any() or torch.isinf(cond).any():
+        raise SystemExit("Conditioning has NaN/Inf — projector likely diverged in training.")
 
     generator = torch.Generator(device=device).manual_seed(args.seed) if args.seed is not None else None
     out = pipe(

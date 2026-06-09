@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 
-PROFILE_MODES = ("style", "biography", "combined")
+PROFILE_MODES = ("audio_only", "style", "biography", "combined")
 DEFAULT_PROFILE_PATH = Path(__file__).with_name("artist_profiles.json")
 
 
@@ -14,6 +14,10 @@ def load_profiles(path=DEFAULT_PROFILE_PATH):
 def profile_text(profiles, artist, mode):
     if mode not in PROFILE_MODES:
         raise ValueError(f"Unknown profile mode {mode!r}; choose from {PROFILE_MODES}")
+    if mode == "audio_only":
+        # No textual context — the audio-only ablation. Returns the empty
+        # string so the text encoder produces SD's unconditional embedding.
+        return ""
     if artist not in profiles:
         raise KeyError(f"No profile for artist {artist!r}")
     profile = profiles[artist]
